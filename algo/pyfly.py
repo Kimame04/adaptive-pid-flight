@@ -6,7 +6,7 @@ import os.path as osp
 import json
 import matplotlib.pyplot as plt
 import matplotlib.gridspec
-
+import openpyxl
 
 class ConstraintException(Exception):
     def __init__(self, variable, value, limit):
@@ -1434,22 +1434,35 @@ if __name__ == "__main__":
     pfly.seed(0)
 
     pid = PIDController(pfly.dt)
-    pid.set_reference(phi=0.0, theta=-0.10, va=22)
+    pid.set_reference(phi=0.0, theta=0.00, va=22)
 
-    pfly.reset(state={"roll": 0.00, "pitch": 0.1, "Va": 5, "yaw": 0})
+    #TODO: Iterative simulation of different pitches, save to Excel
 
-    for i in range(1000):
-        phi = pfly.state["roll"].value
-        theta = pfly.state["pitch"].value
-        Va = pfly.state["Va"].value
-        omega = [pfly.state["omega_p"].value, pfly.state["omega_q"].value, pfly.state["omega_r"].value]
+    for j in range (1):
 
-        action = pid.get_action(phi, theta, Va, omega)
-        success, step_info = pfly.step(action)
+        pitch = (j+1) * 0.2
+        pfly.reset(state={"roll": 0.00, "pitch": pitch})
 
-        if not success:
-            break
+        for i in range(1000):
 
-    pfly.render(block=True)
+            phi = pfly.state["roll"].value
+            theta = pfly.state["pitch"].value
+            Va = pfly.state["Va"].value
+            omega = [pfly.state["omega_p"].value, pfly.state["omega_q"].value, pfly.state["omega_r"].value]
+
+            #if(theta < 0.01 * pitch):
+                #print(i)
+                #break
+
+            action = pid.get_action(phi, theta, Va, omega, False)
+            success, step_info = pfly.step(action)
+
+            if not success:
+                break
+
+        pfly.render(block=True)
+        #pid.df.to_excel("output.xlsx")
+        pid.df2.to_excel("dataset.xlsx")
+        #print(j)
 else:
     from .dryden import DrydenGustModel
