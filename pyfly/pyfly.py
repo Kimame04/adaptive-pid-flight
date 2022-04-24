@@ -1,5 +1,7 @@
 import numpy as np
 import math
+
+import pandas as pd
 import scipy.integrate
 import scipy.io
 import os.path as osp
@@ -7,6 +9,10 @@ import json
 import matplotlib.pyplot as plt
 import matplotlib.gridspec
 import openpyxl
+import sympy as sym
+
+from algo.RLS import RLS
+
 
 class ConstraintException(Exception):
     def __init__(self, variable, value, limit):
@@ -1424,45 +1430,152 @@ class PyFly:
         self.state["velocity_v"].set_value(ode_sol[start_i + 7], save=save)
         self.state["velocity_w"].set_value(ode_sol[start_i + 8], save=save)
         self.actuation.set_states(ode_sol[start_i + 9:], save=save)
+    '''
+    def loadPredictions(self, isAdaptive: bool):
+        # delta_e = -2.47186674e-05x + 1.88118482e-02
+        if (isAdaptive):
+            self.f = pd.read_excel('dataset.xlsx')
+            test_size = len(self.f)
+            self.y = self.f['I'].values
+            lam = 0.98
+            delta = 0.01
+            num_vars = 2
+            self.LS = RLS(num_vars, lam, delta)
+            self.pred_x = []
+            self.pred_y = []
+            self.pred_z = []
+            pred_error = []
+            for i in range(test_size):
+                x = np.matrix(np.zeros((1, num_vars)))
+                for j in range(num_vars):
+                    x[0, j] = i ** j
+                self.pred_x.append(i)
+                self.pred_y.append(float(x * self.LS.w))
+                self.pred_z.append([-4, -0.75, -1])
+                pred_error.append(self.LS.get_error())
+                self.LS.add_obs(x.T, self.y[i])
+            # print(self.LS.w)
 
+    def loadParams(self):
+        self.vals = pd.read_excel('output.xlsx')
+        self.errors = pd.read_excel('errors.xlsx')
+
+      
+    def addPredictions(self, input, pid, disturbance):
+        BASE = 0.2
+        predicted = (disturbance / BASE) * (self.LS.w[1] * pid.dt * pid.count + self.LS.w[0])
+        actual = input[0]
+        x = np.matrix(np.zeros((1, 2)))
+        for j in range(2):
+            x[0,j] = 1 ** j
+        self.LS.add_obs(x.T, actual)
+        self.pred_x.append(1000 + pid.count)
+        self.pred_y.append(float(x * self.LS.w))
+        self.y = np.append(self.y, [[actual]])
+        self.getParams(pid)
+
+    def getParams(self, pid):
+        a, b, c = sym.symbols('a,b,c')
+
+        prev_x = self.errors
+        prev_y = self.y
+
+        e1 = sym.Eq(a * prev_x.iloc[pid.count-3,0] + b * prev_x.iloc[pid.count-3,1] + c * prev_x.iloc[pid.count-3,2], prev_y[pid.count-3])
+        e2 = sym.Eq(a * prev_x.iloc[pid.count-2,0] + b * prev_x.iloc[pid.count-2,1] + c * prev_x.iloc[pid.count-2,2], prev_y[pid.count-2])
+        e3 = sym.Eq(a * prev_x.iloc[pid.count-1,0] + b * prev_x.iloc[pid.count-1,1] + c * prev_x.iloc[pid.count-1,2], prev_y[pid.count-1])
+
+        sol = sym.solve([e1, e2, e3], (a, b, c))
+        #pid.k_p_theta = sol.get(a)
+        #pid.k_i_theta = sol.get(b)
+        #pid.k_d_theta = sol.get(c)
+        #print(pid.count)
+        self.vals = self.vals.append({'P': a, 'I': b, 'D': c}, ignore_index=True)
+
+    '''
+
+def generateSimulations(n, pid, start_roll, start_pitch, isOptimisation, isAdaptive):
+    '''
+    n is the number of steps, and each iteration simulates 0.01 seconds of flight. This generates a 
+    plot of the flight telemetry, and saves the results to an excel file.
+    '''
+    pfly.reset(state={"roll": start_roll, "pitch": start_pitch})
+    output = pd.DataFrame(columns=['k_p', 'k_i', 'sum_error'])
+    for i in range(n):
+        phi = pfly.state["roll"].value
+        theta = pfly.state["pitch"].value
+        Va = pfly.state["Va"].value
+        omega = [pfly.state["omega_p"].value, pfly.state["omega_q"].value, pfly.state["omega_r"].value]
+        action = pid.get_action(phi, theta, Va, omega, isAdaptive)
+        success, step_info = pfly.step(action)
+        temp = pd.DataFrame([[pid.k_p_theta, pid.k_i_theta, pid.sum_pitch_error + pid.sum_roll_error]], columns=['k_p', 'k_i', 'sum_error'])
+        output = pd.concat([output, temp])
+        if not success:
+            break
+    if not isOptimisation:
+        output.to_excel('excel/output.xlsx')
+        print((pid.sum_pitch_error + pid.sum_roll_error))
+        pfly.render(block=True)
+
+def optimiseAlpha(start, end, increment, runs):
+    best_val = math.inf
+    output = pd.DataFrame(columns=['alpha', 'sum_error'])
+    for i in range(start, end, increment):
+        pid = PIDController(pfly.dt)
+        pid.set_reference(phi=0.0, theta=0.00, va=22)
+        pid.ALPHA = (i * 0.001)
+        generateSimulations(runs, pid, 0, 0.18, True)
+        temp = pd.DataFrame([[pid.ALPHA, pid.sum_pitch_error]], columns=['alpha', 'sum_error'])
+        output = pd.concat([output, temp])
+        if pid.sum_pitch_error < best_val:
+            best_val = pid.sum_pitch_error
+            print('new best value for alpha: ' + str(pid.ALPHA) + ' sum: ' + str(best_val))
+    output.to_excel('excel/alpha.xlsx')
+
+def optimiseBeta(start, end, increment, runs):
+    best_val = math.inf
+    output = pd.DataFrame(columns=['beta', 'sum_error'])
+    for i in range(start, end, increment):
+        pid = PIDController(pfly.dt)
+        pid.set_reference(phi=0.0, theta=0.00, va=22)
+        pid.BETA = (i * 0.001)
+        generateSimulations(runs, pid, 0.18, 0, True)
+        temp = pd.DataFrame([[pid.BETA, pid.sum_roll_error]], columns=['beta', 'sum_error'])
+        output = pd.concat([output, temp])
+        if pid.sum_roll_error < best_val:
+            best_val = pid.sum_roll_error
+            print('new best value for beta: ' + str(pid.BETA) + ' sum: ' + str(best_val))
+    output.to_excel('excel/beta.xlsx')
+
+def generateComparisons(iter, runs):
+    output = pd.DataFrame(columns=['pitch', 'error_conventional', 'error_adaptive'])
+    for i in range(1, iter):
+        pid = PIDController(pfly.dt)
+        pid.set_reference(phi=0.0, theta=0.00, va=22)
+        generateSimulations(runs, pid, i * 0.01, i * 0.01, True, False)
+        combined_error_conventional = pid.sum_pitch_error + pid.sum_roll_error
+        pid = PIDController(pfly.dt)
+        pid.set_reference(phi=0.0, theta=0.00, va=22)
+        generateSimulations(runs, pid, i * 0.01, i * 0.01, True, True)
+        combined_error_adaptive = pid.sum_pitch_error + pid.sum_roll_error
+        temp = pd.DataFrame([[i * 0.01, combined_error_conventional, combined_error_adaptive]], columns=['pitch', 'error_conventional', 'error_adaptive'])
+        output = pd.concat([output, temp])
+    output.to_excel('excel/comparisons.xlsx')
 
 if __name__ == "__main__":
-    from dryden import DrydenGustModel
+    from algo.dryden import DrydenGustModel
     from pid_controller import PIDController
+    import operator
 
-    pfly = PyFly("pyfly_config.json", "x8_param.mat")
+    pfly = PyFly("pyfly/pyfly_config.json", "pyfly/x8_param.mat")
     pfly.seed(0)
-
+    
     pid = PIDController(pfly.dt)
     pid.set_reference(phi=0.0, theta=0.00, va=22)
 
-    #TODO: Iterative simulation of different pitches, save to Excel
+    #generateSimulations(500, pid, 0.15, 0.15, False, True)
+    #optimiseAlpha(0, 5000, 50, 500)
+    #optimiseBeta(0, 5000, 50, 500)
+    generateComparisons(20, 500)
 
-    for j in range (1):
-
-        pitch = (j+1) * 0.2
-        pfly.reset(state={"roll": 0.00, "pitch": pitch})
-
-        for i in range(1000):
-
-            phi = pfly.state["roll"].value
-            theta = pfly.state["pitch"].value
-            Va = pfly.state["Va"].value
-            omega = [pfly.state["omega_p"].value, pfly.state["omega_q"].value, pfly.state["omega_r"].value]
-
-            #if(theta < 0.01 * pitch):
-                #print(i)
-                #break
-
-            action = pid.get_action(phi, theta, Va, omega, False)
-            success, step_info = pfly.step(action)
-
-            if not success:
-                break
-
-        pfly.render(block=True)
-        #pid.df.to_excel("output.xlsx")
-        pid.df2.to_excel("dataset.xlsx")
-        #print(j)
 else:
-    from .dryden import DrydenGustModel
+    from algo.dryden import DrydenGustModel
