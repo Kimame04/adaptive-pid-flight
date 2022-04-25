@@ -40,12 +40,17 @@ class PIDController:
         self.newB = None
         self.newC = None
         self.newD = None
+        self.newE = None
+        self.newF = None
         self.count = 0
 
-        self.ALPHA = 3.5
-        self.BETA = 4.8
+        self.ALPHA = 3.75
+        self.BETA = 4.25
+        self.GAMMA = 3.05
+
         self.sum_pitch_error = 0
         self.sum_roll_error = 0
+        self.sum_throttle_error = 0
 
         self.df = pd.DataFrame(columns=list('PID'))
 
@@ -59,6 +64,17 @@ class PIDController:
         self.int_roll = 0
         self.int_pitch = 0
 
+    def incrementGains(self):
+        self.k_p_theta += 0.001
+        self.k_i_theta += 0.001
+
+        self.k_p_phi += 0.001
+        self.k_i_phi += 0.001
+
+        self.k_p_V += 0.001
+        self.k_i_V += 0.001
+
+
     def get_action(self, phi, theta, va, omega, isAdaptive):
         
         e_V_a = va - self.va_r
@@ -67,6 +83,7 @@ class PIDController:
 
         self.sum_pitch_error += abs(e_theta)
         self.sum_roll_error += abs(e_phi)
+        self.sum_throttle_error += abs(e_V_a)
 
         #adaptive
 
@@ -74,29 +91,32 @@ class PIDController:
 
         if(isAdaptive):
 
+            if self.count == 2:
+                self.newA = np.array([[self.k_p_theta, self.k_i_theta]])
+                self.newB = np.array([[e_theta]])
 
-            if (self.count <= 3 and self.count > 1):
+                self.newC = np.array([[self.k_p_phi, self.k_i_phi]])
+                self.newD = np.array([[e_phi]])
 
-                if (self.count == 2):
-                    self.newA = np.array([[self.k_p_theta, self.k_i_theta]])
-                    self.newB = np.array([[e_theta]])
+                self.newE = np.array([[self.k_p_V, self.k_i_V]])
+                self.newF = np.array([[e_V_a]])
 
-                    self.newC = np.array([[self.k_p_phi, self.k_i_phi]])
-                    self.newD = np.array([[e_phi]])
-                else:
-                    self.newA = np.vstack((self.newA, np.array([self.k_p_theta, self.k_i_theta])))
-                    self.newB = np.vstack((self.newB, np.array(e_theta)))
-                    self.rls_pitch = RecursiveLeastSquares(self.newA, self.newB)
+                self.incrementGains()
 
-                    self.newC = np.vstack((self.newC, np.array([self.k_p_phi, self.k_i_phi])))
-                    self.newD = np.vstack((self.newD, np.array(e_phi)))
-                    self.rls_roll = RecursiveLeastSquares(self.newC, self.newD)
+            elif self.count == 3:
+                self.newA = np.vstack((self.newA, np.array([self.k_p_theta, self.k_i_theta])))
+                self.newB = np.vstack((self.newB, np.array(e_theta)))
+                self.rls_pitch = RecursiveLeastSquares(self.newA, self.newB)
 
-                self.k_p_theta += 0.001
-                self.k_i_theta += 0.001
+                self.newC = np.vstack((self.newC, np.array([self.k_p_phi, self.k_i_phi])))
+                self.newD = np.vstack((self.newD, np.array(e_phi)))
+                self.rls_roll = RecursiveLeastSquares(self.newC, self.newD)
+                
+                self.newE = np.vstack((self.newE, np.array([self.k_p_V, self.k_i_V])))
+                self.newF = np.vstack((self.newF, np.array([e_V_a])))
+                self.rls_throttle = RecursiveLeastSquares(self.newE, self.newF)
 
-                self.k_p_phi += 0.001
-                self.k_i_phi += 0.001
+                self.incrementGains()
 
             elif self.count > 3:
 
@@ -105,8 +125,12 @@ class PIDController:
                 self.k_i_theta = -abs(self.rls_pitch.x[1][0]) * self.ALPHA * self.count
 
                 self.rls_roll.addData(np.array([self.k_p_phi, self.k_i_phi]), np.array([e_phi]))
-                #self.k_p_phi = -abs(self.rls_roll.x[0][0]) * self.BETA * np.clip(self.count, 0, 10)
-                #self.k_i_phi = -abs(self.rls_roll.x[1][0]) * self.BETA * np.clip(self.count, 0, 10)
+                self.k_p_phi = abs(self.rls_roll.x[0][0]) * self.BETA * self.count
+                self.k_i_phi = abs(self.rls_roll.x[1][0]) * self.BETA * self.count
+
+                self.rls_throttle.addData(np.array([self.k_p_V, self.k_i_V]), np.array([e_V_a]))
+                self.k_p_V = abs(self.rls_throttle.x[0][0]) * self.GAMMA * self.count
+                self.k_i_V = abs(self.rls_throttle.x[1][0]) * self.GAMMA * self.count
 
         # (integral states are initialized to zero)
         self.int_va = self.int_va + self.dt * e_V_a
